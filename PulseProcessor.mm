@@ -10,8 +10,62 @@
 #import "PulseProcessor.h"
 #import <opencv2/core.hpp>
 #import <opencv2/core/core_c.h>
+#import <opencv2/videoio/cap_ios.h>
+#import <opencv2/imgcodecs/ios.h>
 
-@implementation PulseProcessor
+#define prefix "PandaFramework:"
+#define LOG(info) std::cout << prefix \
+    << info << std::endl;
+
+typedef void (^onResult) (NSInteger sym);
+using namespace cv;
+
+const double Amin = 1.45;
+const double Amax = 2.8;
+const double Amaxm = 4;
+const int Fmin = 14;
+const int Fmax = 21;
+
+@interface PulseProcessor ()<CvVideoCameraDelegate>;
+
+@end
+
+@implementation PulseProcessor {
+    NSInteger counter;
+    std::vector<double> avgrs;
+    Scalar avgrgb;
+    BOOL recorded;
+    NSInteger sym;
+    CvVideoCamera* videoCamera;
+    UIImageView* videoView;
+}
+
+- (void) turnTorchOn {
+    
+    AVCaptureDevice *device = [AVCaptureDevice defaultDeviceWithMediaType:AVMediaTypeVideo];
+    if ([device hasTorch]) {
+        std::cout<<"有闪光灯"<<std::endl;
+        [device lockForConfiguration:nil];
+        [device setTorchMode:AVCaptureTorchModeOn];  // use AVCaptureTorchModeOn to turn on
+        [device unlockForConfiguration];
+    } else {
+        std::cout<<"没有闪光灯"<<std::endl;
+    }
+}
+
+- (void) turnTorchOff {
+    
+    AVCaptureDevice *device = [AVCaptureDevice defaultDeviceWithMediaType:AVMediaTypeVideo];
+    if ([device hasTorch]) {
+        std::cout<<"有闪光灯"<<std::endl;
+        [device lockForConfiguration:nil];
+        [device setTorchMode:AVCaptureTorchModeOff];  // use AVCaptureTorchModeOff to turn off
+        [device unlockForConfiguration];
+    } else {
+        std::cout<<"没有闪光灯"<<std::endl;
+    }
+}
+
 
 double maxi(std::vector<double> av,int l,int r){
     double max = 0;
@@ -33,8 +87,10 @@ double naiveA(std::vector<double> av){
     double max,min,sum = 0, s = 0;
     double *temp = new double[av.size()-24];
     for(int i=0;i<av.size()-24;i++){
-        max=maxi(av,i,i+24);
-        min=mini(av,i,i+24);
+        max = *std::max_element(&av[i], &av[i+24]);
+        min = *std::min_element(&av[i], &av[i+24]);
+        //max=maxi(av,i,i+24);
+        //min=mini(av,i,i+24);
         temp[i] = max - min;
         sum += max - min;
     }
@@ -52,7 +108,7 @@ double naiveA(std::vector<double> av){
 int naiveF(std::vector<double> av){
     int result=0;
     for(int i=2;i<av.size()-2;i++)
-        if(av[i]==maxi(av,i-2,i+2))
+        if(av[i]==*std::max_element(&av[i-2], &av[i+2]))
             result++;
     return result;
 }
@@ -105,31 +161,37 @@ int judge(std::vector<double> data)
     return 0;
 }
 
-- (id) init {
+- (id) init:(UIImageView*) imageView {
     self = [super init];
     
+    videoCamera = [[CvVideoCamera alloc] initWithParentView:imageView];
+    videoView = imageView;
+    videoCamera.delegate = self;
+    videoCamera.defaultAVCaptureDevicePosition = AVCaptureDevicePositionBack;
+    
+    [self reset];
+    return self;
+}
+
+- (void) reset {
     if(self != nil){
         counter = 0;
         avgrgb = Scalar(0, 0, 0, 0);
         avgrs.clear();
-        recorded = 0;
+        recorded = false;
         sym = 0;
     }
-    
-    return self;
 }
 
-- (void)setIsrecord:(BOOL)is_record {
-    recorded = is_record;
-}
-
-- (BOOL) isrecord {
-    return recorded;
+- (void) processImage:(cv::Mat &)image {
+    [self process:image];
+    videoView.image = MatToUIImage(image);
 }
 
 - (NSInteger) sym {
     return sym;
 }
+
 - (double) process: (Mat) mRgba {
     if (recorded) {
         cv::Rect rect = cv::Rect(0,0,mRgba.cols/3, mRgba.rows);
@@ -159,10 +221,34 @@ int judge(std::vector<double> data)
     }
 }
 
-- (void) finishRecord {
+- (void) prepareRecord {
     if (recorded) {
+        LOG("already started!");
+        return;
+    }
+    [self reset];
+    [self turnTorchOn];
+    [videoCamera start];
+}
+
+- (void) startRecord{
+    if (recorded) {
+        LOG("already started!");
+        return;
+    }
+    recorded = true;
+}
+
+- (void) finishRecord: (onResult)callback {
+    if (recorded) {
+        [videoCamera stop];
+        [self turnTorchOff];
         recorded = false;
         sym = judge(smooth(avgrs));
+        callback((int)sym);
+    } else {
+        LOG("it hasn't started!");
+        callback(-1);
     }
 }
 @end
